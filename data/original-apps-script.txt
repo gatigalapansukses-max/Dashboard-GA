@@ -1,0 +1,473 @@
+/**
+ * TIGALAPAN INDONESIA - ASSET CONTROL WEB APP 2026
+ * Source: worksheet OKT in supplied workbook (row 4 headers, data row 5+).
+ * Deploy: Google Sheet > Extensions > Apps Script; see README.
+ * All server mutations enforce permissions. Never expose this spreadsheet publicly.
+ */
+const APP = Object.freeze({
+  DB_PROP: 'TIGALAPAN_ASSET_DB_ID', SESSION_TTL: 21600,
+  TABLES: {
+    ASSETS: ['id','name','brand','qty','category','condition','position','branch','notes','owner','purchaseDate','purchasePrice','registrationNo','serialNo','status','source','sourceRow','createdAt','updatedAt','photoUrl'],
+    USERS: ['username','displayName','role','branch','salt','passwordHash','active','createdAt','updatedAt'],
+    LOANS: ['id','assetId','assetName','branch','qty','borrower','borrowDate','dueDate','returnDate','status','notes','createdBy','createdAt','updatedAt'],
+    TRANSFERS: ['id','assetId','assetName','fromBranch','toBranch','qty','status','notes','requestedBy','approvedBy','shippedBy','receivedBy','requestedAt','approvedAt','shippedAt','receivedAt','destinationAssetId'],
+    CONDITIONS: ['id','assetId','assetName','branch','oldCondition','newCondition','notes','photoUrl','status','reportedBy','reviewedBy','reportedAt','reviewedAt'],
+    SO: ['id','branch','status','createdBy','createdAt','submittedBy','submittedAt','approvedBy','approvedAt','notes'],
+    SO_ITEMS: ['soId','assetId','assetName','qtySystem','qtyCounted','condition','notes','countedBy','countedAt'],
+    MAINTENANCE: ['id','assetId','assetName','branch','issue','vendor','cost','dueDate','status','action','reportedBy','createdAt','updatedAt','closedAt'],
+    AUDIT: ['at','actor','role','action','entity','entityId','branch','details']
+  },
+  CONDITIONS: ['BAGUS','LAYAK PAKAI','TIDAK LAYAK PAKAI','RUSAK'],
+  STATUSES: ['AKTIF','PERBAIKAN','TIDAK AKTIF','PERLU VERIFIKASI','DIPINDAHKAN']
+});
+
+function doGet() {
+  return HtmlService.createHtmlOutputFromFile('Index')
+    .setTitle('Tigalapan | Asset Control 2026')
+    .addMetaTag('viewport','width=device-width, initial-scale=1');
+}
+
+/** RUN ONCE MANUALLY FROM APPS SCRIPT EDITOR. Returns admin password ONLY there. */
+function setupDatabase() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  if (!ss) throw Error('Buka Apps Script dari Google Sheets hasil konversi Excel (bound script).');
+  const source = ss.getSheetByName('OKT');
+  if (!source) throw Error('Sheet OKT tidak ditemukan. Konversi Excel ke Google Sheets terlebih dahulu.');
+  PropertiesService.getScriptProperties().setProperty(APP.DB_PROP, ss.getId());
+  Object.keys(APP.TABLES).forEach(k => ensureTable_(ss, k));
+  let assets = read_('ASSETS');
+  let imported = 0, invalidQty = 0;
+  if (!assets.length) {
+    const values = source.getRange(5,1,Math.max(0, source.getLastRow()-4),8).getValues();
+    const createdAt = now_();
+    const records = [];
+    values.forEach((r,i) => {
+      const name=clean_(r[0]);
+      if (!name) return;
+      const n=Number(r[2]);
+      const valid=clean_(r[2])!=='' && Number.isFinite(n) && n>=0 && Number.isInteger(n);
+      if (!valid) invalidQty++;
+      records.push({
+        id:'AS-OKT-'+String(i+5).padStart(4,'0'), name, brand:clean_(r[1]),
+        qty:valid?n:0, category:clean_(r[3])||'BELUM DIKLASIFIKASI',
+        condition:normalizeCondition_(r[4]), position:clean_(r[5]),
+        branch:normalizeBranch_(r[6])||'BELUM DITENTUKAN', notes:clean_(r[7]), owner:'',
+        purchaseDate:'',purchasePrice:'',registrationNo:'',serialNo:'',
+        status:valid && clean_(r[6])?'AKTIF':'PERLU VERIFIKASI',
+        source:'OKT 2026',sourceRow:i+5,createdAt,updatedAt:createdAt,photoUrl:''
+      });
+    });
+    appendMany_('ASSETS',records);
+    imported=records.length;
+  }
+  let firstAdmin = null;
+  if (!read_('USERS').length) {
+    const pass = Utilities.getUuid().replace(/-/g,'') + 'A9!';
+    const salt = Utilities.getUuid();
+    appendOne_('USERS',{username:'admin',displayName:'GA Administrator',role:'ADMIN',branch:'ALL',salt,passwordHash:hash_(salt,pass),active:'YES',createdAt:now_(),updatedAt:now_()});
+    firstAdmin={username:'admin',temporaryPassword:pass};
+    Logger.log('FIRST ADMIN LOGIN (SIMPAN AMAN): '+JSON.stringify(firstAdmin));
+  }
+  return {message:'Database siap. Import tidak diulang jika ASSETS sudah terisi.',imported,invalidQty,totalAssets:read_('ASSETS').length,firstAdmin};
+}
+
+function apiLogin(username,password) {
+  const u=clean_(username).toLowerCase();
+  const p=String(password||'');
+  if (!u||!p) throw Error('Username dan password wajib diisi.');
+  const cache=CacheService.getScriptCache();
+  const key='loginFail:'+u.replace(/[^a-z0-9_.@-]/g,'_').slice(0,90);
+  if (Number(cache.get(key)||0)>=5) throw Error('Terlalu banyak percobaan. Coba lagi dalam 15 menit.');
+  const user=read_('USERS').find(x=>x.username.toLowerCase()===u && x.active==='YES');
+  if (!user||hash_(user.salt,p)!==user.passwordHash) {
+    cache.put(key,String(Number(cache.get(key)||0)+1),900);
+    throw Error('Login gagal. Periksa akun dan password.');
+  }
+  cache.remove(key);
+  const token=Utilities.getUuid()+Utilities.getUuid();
+  cache.put('session:'+token,JSON.stringify({username:user.username}),APP.SESSION_TTL);
+  audit_({username:user.username,role:user.role},'LOGIN','SESSION','',user.branch,'Berhasil masuk');
+  return {token, user:publicUser_(user)};
+}
+function apiLogout(token) { CacheService.getScriptCache().remove('session:'+String(token||'')); return true; }
+
+function apiBootstrap(token) {
+  const actor=auth_(token);
+  const assets=scope_(actor,read_('ASSETS'));
+  const branches=actor.role==='STORE'?[actor.branch]:branches_();
+  return {
+    user:publicUser_(actor),serverNow:now_(),branches,
+    assets:assets.map(a=>({...a,qty:Number(a.qty)||0})),
+    loans:scope_(actor,read_('LOANS')).map(x=>({...x,qty:Number(x.qty)||0})),
+    transfers:read_('TRANSFERS').filter(t=>isGlobal_(actor)||t.fromBranch===actor.branch||t.toBranch===actor.branch),
+    conditions:scope_(actor,read_('CONDITIONS')).slice(-1000),
+    maintenance:scope_(actor,read_('MAINTENANCE')).slice(-1000),
+    so:scope_(actor,read_('SO')).slice(-250),
+    audit:isGlobal_(actor)?read_('AUDIT').slice(-250).reverse():[],
+    users:actor.role==='ADMIN'?read_('USERS').map(publicUser_):[]
+  };
+}
+
+function apiSaveAsset(token, payload) {
+  const a=auth_(token); requireRole_(a,['ADMIN','GA']);
+  return withWrite_(()=>{
+    const all=read_('ASSETS');
+    const input=payload||{}; const id=clean_(input.id);
+    const existing=id?all.find(x=>x.id===id):null;
+    if (id&&!existing) throw Error('ID aset tidak ditemukan.');
+    const name=clean_(input.name),branch=normalizeBranch_(input.branch),category=clean_(input.category);
+    const qty=positiveInt_(input.qty,true);
+    if (!name||!branch||!category) throw Error('Nama, toko/lokasi, kategori wajib diisi.');
+    const condition=normalizeCondition_(input.condition);
+    const status=clean_(input.status)||'AKTIF';
+    if (!APP.STATUSES.includes(status)) throw Error('Status tidak valid.');
+    if (existing) {
+      if (existing.branch!==branch && hasObligations_(existing.id)) throw Error('Selesaikan peminjaman/transfer sebelum mengganti lokasi. Gunakan menu Transfer.');
+      if (existing.branch!==branch) throw Error('Perpindahan toko harus melalui menu Transfer agar terlacak.');
+      if (qty<reserved_(existing.id)) throw Error('Qty kurang dari unit yang masih dipinjam / dalam transfer.');
+    }
+    const row={...(existing||{}),id:existing?existing.id:newId_('AS'),
+      name,brand:clean_(input.brand),qty,category,condition,position:clean_(input.position),branch,
+      notes:clean_(input.notes),owner:clean_(input.owner),purchaseDate:date_(input.purchaseDate),
+      purchasePrice:optionalMoney_(input.purchasePrice),registrationNo:clean_(input.registrationNo),
+      serialNo:clean_(input.serialNo),status,source:existing?existing.source:'INPUT MANUAL',
+      sourceRow:existing?existing.sourceRow:'',createdAt:existing?existing.createdAt:now_(),updatedAt:now_(),
+      photoUrl:safeUrl_(input.photoUrl)};
+    if (existing) updateOne_('ASSETS','id',row.id,row);
+    else appendOne_('ASSETS',row);
+    audit_(a,existing?'UPDATE':'CREATE','ASSET',row.id,branch,JSON.stringify({name,qty,condition,status}));
+    return row;
+  });
+}
+
+function apiCreateLoan(token, payload) {
+  const a=auth_(token); requireRole_(a,['ADMIN','GA','STORE']);
+  return withWrite_(()=>{
+    const p=payload||{}, asset=assetFor_(a,p.assetId), qty=positiveInt_(p.qty,false);
+    if (asset.status!=='AKTIF') throw Error('Hanya aset aktif yang dapat dipinjam.');
+    if (qty>available_(asset.id)) throw Error('Unit tersedia tidak mencukupi.');
+    const borrower=clean_(p.borrower), start=date_(p.borrowDate), due=date_(p.dueDate);
+    if(!borrower||!start||!due||due<start) throw Error('Peminjam dan tanggal peminjaman/jatuh tempo wajib valid.');
+    const row={id:newId_('LN'),assetId:asset.id,assetName:asset.name,branch:asset.branch,qty,borrower,
+      borrowDate:start,dueDate:due,returnDate:'',status:'DIPINJAM',notes:clean_(p.notes),
+      createdBy:a.username,createdAt:now_(),updatedAt:now_()};
+    appendOne_('LOANS',row);audit_(a,'LOAN_CREATE','LOAN',row.id,row.branch,JSON.stringify({assetId:row.assetId,qty,due}));return row;
+  });
+}
+function apiReturnLoan(token, id, note) {
+  const a=auth_(token); requireRole_(a,['ADMIN','GA','STORE']);
+  return withWrite_(()=>{
+    const row=read_('LOANS').find(x=>x.id===id);
+    if(!row)throw Error('Peminjaman tidak ditemukan.');assertBranch_(a,row.branch);
+    if(row.status!=='DIPINJAM')throw Error('Peminjaman sudah selesai.');
+    row.status='DIKEMBALIKAN';row.returnDate=today_();row.updatedAt=now_();
+    row.notes=[row.notes,clean_(note)].filter(Boolean).join(' | ');
+    updateOne_('LOANS','id',id,row);audit_(a,'LOAN_RETURN','LOAN',id,row.branch,row.notes);return row;
+  });
+}
+
+function apiCreateTransfer(token,payload) {
+  const a=auth_(token);requireRole_(a,['ADMIN','GA','STORE']);
+  return withWrite_(()=>{
+    const p=payload||{}, asset=assetFor_(a,p.assetId),to=normalizeBranch_(p.toBranch);
+    const qty=positiveInt_(p.qty,false);
+    if(!to||to===asset.branch) throw Error('Toko tujuan harus berbeda dan tidak kosong.');
+    if(!branches_().includes(to))throw Error('Toko tujuan harus lokasi terdaftar.');
+    if(asset.status!=='AKTIF'||qty>available_(asset.id))throw Error('Aset tidak aktif atau qty tersedia tidak cukup.');
+    const row={id:newId_('TR'),assetId:asset.id,assetName:asset.name,fromBranch:asset.branch,toBranch:to,
+      qty,status:'MENUNGGU PERSETUJUAN',notes:clean_(p.notes),requestedBy:a.username,approvedBy:'',
+      shippedBy:'',receivedBy:'',requestedAt:now_(),approvedAt:'',shippedAt:'',receivedAt:'',destinationAssetId:''};
+    appendOne_('TRANSFERS',row);audit_(a,'TRANSFER_REQUEST','TRANSFER',row.id,row.fromBranch,JSON.stringify({to,qty}));return row;
+  });
+}
+function apiAdvanceTransfer(token,id,decision) {
+  const a=auth_(token);requireRole_(a,['ADMIN','GA','STORE']);
+  return withWrite_(()=>{
+    const row=read_('TRANSFERS').find(x=>x.id===id);
+    if(!row)throw Error('Transfer tidak ditemukan.');
+    const next=String(decision||'').toUpperCase();
+    const origin=()=>assertBranch_(a,row.fromBranch), dest=()=>assertBranch_(a,row.toBranch);
+    if(next==='APPROVE') {requireRole_(a,['ADMIN','GA']);if(row.status!=='MENUNGGU PERSETUJUAN')throw Error('Status tidak sesuai.');row.status='DISETUJUI';row.approvedBy=a.username;row.approvedAt=now_();}
+    else if(next==='REJECT') {requireRole_(a,['ADMIN','GA']);if(row.status!=='MENUNGGU PERSETUJUAN')throw Error('Status tidak sesuai.');row.status='DITOLAK';row.approvedBy=a.username;row.approvedAt=now_();}
+    else if(next==='CANCEL') {origin();if(row.status!=='MENUNGGU PERSETUJUAN')throw Error('Hanya permohonan baru dapat dibatalkan.');row.status='DIBATALKAN';}
+    else if(next==='SHIP') {origin();if(row.status!=='DISETUJUI')throw Error('Harus disetujui GA sebelum dikirim.');row.status='DALAM PENGIRIMAN';row.shippedBy=a.username;row.shippedAt=now_();}
+    else if(next==='RECEIVE') {
+      dest();if(row.status!=='DALAM PENGIRIMAN')throw Error('Transfer belum dikirim.');
+      const asset=read_('ASSETS').find(x=>x.id===row.assetId);
+      if(!asset||Number(asset.qty)<Number(row.qty))throw Error('Qty sumber tidak cocok. Mohon pemeriksaan GA.');
+      // Verify remaining reservations and active loans before splitting batch.
+      const remain=Number(asset.qty)-Number(row.qty);
+      if(remain<reserved_(asset.id,row.id))throw Error('Qty tidak cukup untuk komitmen aset lainnya.');
+      asset.qty=remain;asset.updatedAt=now_();if(remain===0)asset.status='DIPINDAHKAN';
+      updateOne_('ASSETS','id',asset.id,asset);
+      const moved={...asset,id:newId_('AS'),qty:Number(row.qty),branch:row.toBranch,status:'AKTIF',
+        source:'TRANSFER '+row.id,sourceRow:'',createdAt:now_(),updatedAt:now_()};
+      appendOne_('ASSETS',moved);row.destinationAssetId=moved.id;
+      row.status='DITERIMA';row.receivedBy=a.username;row.receivedAt=now_();
+    } else throw Error('Aksi transfer tidak valid.');
+    updateOne_('TRANSFERS','id',id,row);audit_(a,'TRANSFER_'+next,'TRANSFER',id,row.fromBranch,JSON.stringify({to:row.toBranch,qty:row.qty,newAsset:row.destinationAssetId}));return row;
+  });
+}
+
+function apiReportCondition(token,payload) {
+  const a=auth_(token);requireRole_(a,['ADMIN','GA','STORE']);
+  return withWrite_(()=>{
+    const p=payload||{},asset=assetFor_(a,p.assetId);
+    const condition=normalizeCondition_(p.newCondition);
+    if(!APP.CONDITIONS.includes(condition))throw Error('Pilih kondisi aset yang valid.');
+    if(!clean_(p.notes))throw Error('Keterangan hasil inspeksi wajib diisi.');
+    const auto=isGlobal_(a);
+    const row={id:newId_('CV'),assetId:asset.id,assetName:asset.name,branch:asset.branch,oldCondition:asset.condition,
+      newCondition:condition,notes:clean_(p.notes),photoUrl:safeUrl_(p.photoUrl),status:auto?'DISETUJUI':'MENUNGGU',
+      reportedBy:a.username,reviewedBy:auto?a.username:'',reportedAt:now_(),reviewedAt:auto?now_():''};
+    appendOne_('CONDITIONS',row);
+    if(auto){asset.condition=condition;asset.updatedAt=now_();updateOne_('ASSETS','id',asset.id,asset);}
+    audit_(a,'CONDITION_REPORT','CONDITION',row.id,row.branch,JSON.stringify({assetId:asset.id,condition,auto}));return row;
+  });
+}
+function apiReviewCondition(token,id,approve) {
+  const a=auth_(token);requireRole_(a,['ADMIN','GA']);
+  return withWrite_(()=>{
+    const row=read_('CONDITIONS').find(x=>x.id===id);
+    if(!row||row.status!=='MENUNGGU')throw Error('Validasi tidak tersedia.');
+    const asset=read_('ASSETS').find(x=>x.id===row.assetId);
+    if(!asset)throw Error('Aset tidak ditemukan.');
+    if(asset.branch!==row.branch||asset.status==='DIPINDAHKAN')throw Error('Aset sudah pindah lokasi. Pemeriksaan harus diulang di lokasi baru.');
+    if(approve&&asset.condition!==row.oldCondition)throw Error('Kondisi aset telah berubah setelah pelaporan. Ajukan inspeksi baru.');
+    row.status=approve?'DISETUJUI':'DITOLAK';row.reviewedBy=a.username;row.reviewedAt=now_();
+    updateOne_('CONDITIONS','id',id,row);
+    if(approve){asset.condition=row.newCondition;asset.updatedAt=now_();updateOne_('ASSETS','id',asset.id,asset);}
+    audit_(a,'CONDITION_REVIEW','CONDITION',id,row.branch,row.status);return row;
+  });
+}
+
+function apiStartSO(token,branch,notes) {
+  const a=auth_(token);requireRole_(a,['ADMIN','GA','STORE']);
+  return withWrite_(()=>{
+    const b=normalizeBranch_(branch||a.branch);assertBranch_(a,b);
+    if(read_('SO').some(x=>x.branch===b&&['DRAFT','DIAJUKAN'].includes(x.status)))throw Error('Masih ada sesi SO yang belum selesai pada lokasi ini.');
+    const assets=read_('ASSETS').filter(x=>x.branch===b&&Number(x.qty)>0&&x.status!=='DIPINDAHKAN');
+    if(!assets.length)throw Error('Lokasi ini belum memiliki aset aktif untuk dihitung.');
+    const id=newId_('SO'),now=now_();
+    const row={id,branch:b,status:'DRAFT',createdBy:a.username,createdAt:now,submittedBy:'',submittedAt:'',approvedBy:'',approvedAt:'',notes:clean_(notes)};
+    appendOne_('SO',row);
+    appendMany_('SO_ITEMS',assets.map(x=>({soId:id,assetId:x.id,assetName:x.name,qtySystem:Number(x.qty),qtyCounted:'',condition:x.condition,notes:'',countedBy:'',countedAt:''})));
+    audit_(a,'SO_START','SO',id,b,`Snapshot ${assets.length} baris`);return row;
+  });
+}
+function apiSOItems(token,soId) {
+  const a=auth_(token);const so=read_('SO').find(x=>x.id===soId);
+  if(!so)throw Error('Sesi SO tidak ditemukan.');assertBranch_(a,so.branch);
+  return {so,items:read_('SO_ITEMS').filter(x=>x.soId===soId)};
+}
+function apiSaveSOCounts(token,soId,counts) {
+  const a=auth_(token);requireRole_(a,['ADMIN','GA','STORE']);
+  return withWrite_(()=>{
+    const so=read_('SO').find(x=>x.id===soId);
+    if(!so||so.status!=='DRAFT')throw Error('SO tidak sedang dalam status draft.');assertBranch_(a,so.branch);
+    if(!Array.isArray(counts)||counts.length>2500)throw Error('Input opname tidak valid.');
+    const all=read_('SO_ITEMS'),map=new Map(counts.map(x=>[String(x.assetId),x]));
+    let n=0;
+    const now=now_();
+    all.forEach(x=>{
+      if(x.soId!==soId||!map.has(x.assetId))return;
+      const c=map.get(x.assetId);
+      x.qtyCounted=c.qtyCounted===''||c.qtyCounted===null?'':positiveInt_(c.qtyCounted,true);
+      x.condition=normalizeCondition_(c.condition);
+      x.notes=clean_(c.notes);x.countedBy=a.username;x.countedAt=now;n++;
+    });
+    writeAll_('SO_ITEMS',all);audit_(a,'SO_SAVE','SO',soId,so.branch,`${n} baris diperbarui`);return {saved:n};
+  });
+}
+function apiSubmitSO(token,soId) {
+  const a=auth_(token);requireRole_(a,['ADMIN','GA','STORE']);
+  return withWrite_(()=>{
+    const so=read_('SO').find(x=>x.id===soId);
+    if(!so||so.status!=='DRAFT')throw Error('SO harus draft.');assertBranch_(a,so.branch);
+    const items=read_('SO_ITEMS').filter(x=>x.soId===soId);
+    if(!items.length||items.some(x=>x.qtyCounted===''||x.qtyCounted===null))throw Error('Isi qty aktual seluruh baris sebelum diajukan.');
+    so.status='DIAJUKAN';so.submittedBy=a.username;so.submittedAt=now_();
+    updateOne_('SO','id',soId,so);audit_(a,'SO_SUBMIT','SO',soId,so.branch,`Submitted ${items.length}`);return so;
+  });
+}
+function apiApproveSO(token,soId) {
+  const a=auth_(token);requireRole_(a,['ADMIN','GA']);
+  return withWrite_(()=>{
+    const so=read_('SO').find(x=>x.id===soId);
+    if(!so||so.status!=='DIAJUKAN')throw Error('SO belum diajukan.');
+    const items=read_('SO_ITEMS').filter(x=>x.soId===soId), assets=read_('ASSETS');
+    const assetMap=new Map(assets.map(x=>[x.id,x]));let variance=0;
+    const obligations={};
+    read_('LOANS').filter(x=>x.status==='DIPINJAM').forEach(x=>obligations[x.assetId]=(obligations[x.assetId]||0)+Number(x.qty||0));
+    read_('TRANSFERS').filter(x=>['MENUNGGU PERSETUJUAN','DISETUJUI','DALAM PENGIRIMAN'].includes(x.status)).forEach(x=>obligations[x.assetId]=(obligations[x.assetId]||0)+Number(x.qty||0));
+    for(const item of items){
+      const asset=assetMap.get(item.assetId),count=Number(item.qtyCounted);
+      if(!asset||Number(asset.qty)!==Number(item.qtySystem))throw Error(`Qty master berubah sejak SO: ${item.assetName}. Buat SO ulang setelah rekonsiliasi.`);
+      if(!Number.isInteger(count)||count<(obligations[asset.id]||0))throw Error(`Qty opname lebih kecil dari aset yang dipinjam/ditransfer: ${item.assetName}`);
+      variance+=Math.abs(count-Number(item.qtySystem));
+    }
+    for(const item of items){
+      const asset=assetMap.get(item.assetId),next=Number(item.qtyCounted);
+      if(Number(asset.qty)!==next||asset.condition!==item.condition){
+        const old=Number(asset.qty);asset.qty=next;asset.condition=item.condition;asset.updatedAt=now_();
+        updateOne_('ASSETS','id',asset.id,asset);
+        audit_(a,'SO_ADJUST','ASSET',asset.id,asset.branch,JSON.stringify({before:old,after:next,soId}));
+      }
+    }
+    so.status='DISETUJUI';so.approvedBy=a.username;so.approvedAt=now_();
+    updateOne_('SO','id',soId,so);audit_(a,'SO_APPROVE','SO',soId,so.branch,`Total selisih absolut ${variance}`);return {so,variance};
+  });
+}
+
+function apiCreateMaintenance(token,payload){
+  const a=auth_(token);requireRole_(a,['ADMIN','GA','STORE']);
+  return withWrite_(()=>{
+    const p=payload||{},asset=assetFor_(a,p.assetId),issue=clean_(p.issue);
+    if(!issue)throw Error('Jelaskan keluhan/kerusakan.');
+    const row={id:newId_('MT'),assetId:asset.id,assetName:asset.name,branch:asset.branch,issue,
+      vendor:clean_(p.vendor),cost:optionalMoney_(p.cost),dueDate:date_(p.dueDate),status:'DILAPORKAN',
+      action:'',reportedBy:a.username,createdAt:now_(),updatedAt:now_(),closedAt:''};
+    appendOne_('MAINTENANCE',row);audit_(a,'MAINTENANCE_OPEN','MAINTENANCE',row.id,row.branch,issue);return row;
+  });
+}
+function apiUpdateMaintenance(token,payload){
+  const a=auth_(token);requireRole_(a,['ADMIN','GA']);
+  return withWrite_(()=>{
+    const p=payload||{},row=read_('MAINTENANCE').find(x=>x.id===p.id);
+    if(!row)throw Error('Tiket tidak ditemukan.');
+    const status=clean_(p.status);
+    if(!['DILAPORKAN','DIPROSES','SELESAI','DIBATALKAN'].includes(status))throw Error('Status maintenance tidak valid.');
+    row.status=status;row.vendor=clean_(p.vendor);row.cost=optionalMoney_(p.cost);row.action=clean_(p.action);
+    row.dueDate=date_(p.dueDate);row.updatedAt=now_();row.closedAt=status==='SELESAI'?now_():'';
+    updateOne_('MAINTENANCE','id',row.id,row);audit_(a,'MAINTENANCE_UPDATE','MAINTENANCE',row.id,row.branch,status);return row;
+  });
+}
+
+function apiSaveUser(token,payload) {
+  const a=auth_(token);requireRole_(a,['ADMIN']);
+  return withWrite_(()=>{
+    const p=payload||{},username=clean_(p.username).toLowerCase();
+    if(!/^[a-z0-9_.@-]{3,80}$/.test(username))throw Error('Username 3–80 karakter: huruf, angka, titik, _, @, atau -.');
+    const users=read_('USERS'),old=users.find(x=>x.username===username);
+    const role=clean_(p.role).toUpperCase(),branch=role==='STORE'?normalizeBranch_(p.branch):'ALL';
+    if(!['ADMIN','GA','STORE','AUDITOR'].includes(role))throw Error('Role tidak valid.');
+    if(role==='STORE'&&!branches_().includes(branch))throw Error('Toko user harus terdaftar.');
+    if(old&&old.username===a.username&&String(p.active)==='NO')throw Error('Tidak bisa menonaktifkan akun sendiri.');
+    const pass=String(p.password||'');
+    if(!old&&pass.length<12)throw Error('Password akun baru minimal 12 karakter.');
+    if(old&&pass&&pass.length<12)throw Error('Password baru minimal 12 karakter.');
+    const salt=pass?Utilities.getUuid():(old?old.salt:'');
+    const row={username,displayName:clean_(p.displayName)||username,role,branch,salt,
+      passwordHash:pass?hash_(salt,pass):old.passwordHash,active:p.active==='NO'?'NO':'YES',
+      createdAt:old?old.createdAt:now_(),updatedAt:now_()};
+    if(old)updateOne_('USERS','username',username,row);else appendOne_('USERS',row);
+    audit_(a,old?'USER_UPDATE':'USER_CREATE','USER',username,branch,JSON.stringify({role,active:row.active,passwordChanged:!!pass}));return publicUser_(row);
+  });
+}
+function apiChangePassword(token,oldPassword,newPassword){
+  const actor=auth_(token);
+  if(String(newPassword||'').length<12)throw Error('Password baru minimal 12 karakter.');
+  return withWrite_(()=>{
+    const u=read_('USERS').find(x=>x.username===actor.username);
+    if(!u||hash_(u.salt,String(oldPassword||''))!==u.passwordHash)throw Error('Password lama salah.');
+    u.salt=Utilities.getUuid();u.passwordHash=hash_(u.salt,String(newPassword));u.updatedAt=now_();
+    updateOne_('USERS','username',u.username,u);audit_(actor,'PASSWORD_CHANGE','USER',u.username,u.branch,'Self-service');return true;
+  });
+}
+
+// ------------------ SERVER-ONLY HELPERS ------------------
+function db_(){
+  const id=PropertiesService.getScriptProperties().getProperty(APP.DB_PROP);
+  if(!id)throw Error('Database belum diinisialisasi. Jalankan setupDatabase() melalui Apps Script Editor.');
+  return SpreadsheetApp.openById(id);
+}
+function ensureTable_(ss,name){
+  let sh=ss.getSheetByName(name);if(!sh)sh=ss.insertSheet(name);
+  const h=APP.TABLES[name];
+  if(sh.getLastRow()===0){sh.getRange(1,1,1,h.length).setValues([h]);sh.setFrozenRows(1);sh.getRange(1,1,1,h.length).setBackground('#222a38').setFontColor('#ffffff').setFontWeight('bold');}
+  else{
+    const headers=sh.getRange(1,1,1,h.length).getDisplayValues()[0];
+    if(h.some((x,i)=>headers[i]!==x))throw Error('Header tabel '+name+' berbeda. Hentikan perubahan manual pada header database.');
+  }
+  return sh;
+}
+function read_(name){
+  const sh=db_().getSheetByName(name);if(!sh)throw Error('Tabel '+name+' belum dibuat.');
+  const rows=sh.getLastRow();if(rows<2)return [];
+  const h=APP.TABLES[name];
+  return sh.getRange(2,1,rows-1,h.length).getValues().filter(r=>r[0]!==''&&r[0]!==null)
+    .map(r=>Object.fromEntries(h.map((key,i)=>[key,asValue_(r[i])])));
+}
+function appendOne_(name,obj){appendMany_(name,[obj]);}
+function appendMany_(name,objects){
+  if(!objects.length)return;
+  const sh=db_().getSheetByName(name),h=APP.TABLES[name];
+  const vals=objects.map(x=>h.map(key=>cellSafe_(x[key])));
+  sh.getRange(sh.getLastRow()+1,1,vals.length,h.length).setValues(vals);
+}
+function updateOne_(name,key,id,obj){
+  const sh=db_().getSheetByName(name),h=APP.TABLES[name],column=h.indexOf(key)+1;
+  if(!column)throw Error('Invalid key field '+key);
+  const values=sh.getRange(2,column,Math.max(0,sh.getLastRow()-1),1).getValues();
+  const index=values.findIndex(x=>String(x[0])===String(id));
+  if(index<0)throw Error('Record not found: '+id);
+  sh.getRange(index+2,1,1,h.length).setValues([h.map(k=>cellSafe_(obj[k]))]);
+}
+function writeAll_(name,objects){
+  const sh=db_().getSheetByName(name),h=APP.TABLES[name],n=sh.getLastRow()-1;
+  if(n>0)sh.getRange(2,1,n,h.length).clearContent();
+  if(objects.length)sh.getRange(2,1,objects.length,h.length).setValues(objects.map(x=>h.map(k=>cellSafe_(x[k]))));
+}
+function withWrite_(fn){const lock=LockService.getScriptLock();if(!lock.tryLock(25000))throw Error('Sistem sedang memproses transaksi lain. Ulangi.');try{return fn();}finally{lock.releaseLock();}}
+function auth_(token){
+  const raw=CacheService.getScriptCache().get('session:'+String(token||''));
+  if(!raw)throw Error('Sesi berakhir. Silakan login kembali.');
+  const u=JSON.parse(raw);
+  const user=read_('USERS').find(x=>x.username===u.username&&x.active==='YES');
+  if(!user)throw Error('Akun tidak aktif.');return user;
+}
+function isGlobal_(actor){return actor.role==='ADMIN'||actor.role==='GA'||actor.role==='AUDITOR';}
+function publicUser_(u){return {username:u.username,displayName:u.displayName,role:u.role,branch:u.branch,active:u.active};}
+function requireRole_(actor,roles){if(!roles.includes(actor.role))throw Error('Akses ditolak untuk role '+actor.role+'.');}
+function assertBranch_(actor,branch){if(!isGlobal_(actor)&&actor.branch!==branch)throw Error('Tidak berwenang mengakses lokasi ini.');}
+function scope_(actor,arr){return isGlobal_(actor)?arr:arr.filter(x=>x.branch===actor.branch);}
+function assetFor_(actor,id){const x=read_('ASSETS').find(x=>x.id===id);if(!x)throw Error('Aset tidak ditemukan.');assertBranch_(actor,x.branch);return x;}
+function branches_(){return [...new Set(read_('ASSETS').map(x=>x.branch).filter(x=>x&&x!=='BELUM DITENTUKAN'))].sort();}
+function reserved_(assetId,excludeTransferId){
+  const loan=read_('LOANS').filter(x=>x.assetId===assetId&&x.status==='DIPINJAM').reduce((n,x)=>n+Number(x.qty||0),0);
+  const transfers=read_('TRANSFERS').filter(x=>x.assetId===assetId&&x.id!==excludeTransferId&&['MENUNGGU PERSETUJUAN','DISETUJUI','DALAM PENGIRIMAN'].includes(x.status)).reduce((n,x)=>n+Number(x.qty||0),0);
+  return loan+transfers;
+}
+function available_(assetId){const x=read_('ASSETS').find(x=>x.id===assetId);return x?Math.max(0,Number(x.qty)-reserved_(assetId)):0;}
+function hasObligations_(assetId){return reserved_(assetId)>0;}
+function clean_(x){return x===null||x===undefined?'':String(x).trim().slice(0,1500);}
+function normalizeBranch_(x){return clean_(x).replace(/\s+/g,' ').toUpperCase();}
+function normalizeCondition_(x){
+  const s=clean_(x).toUpperCase();
+  if(s==='LAYAK PAKAI')return 'LAYAK PAKAI';
+  if(s==='TIDAK LAYAK PAKAI')return 'TIDAK LAYAK PAKAI';
+  if(s==='BAGUS'||s==='RUSAK')return s;
+  return 'BELUM DIPERIKSA';
+}
+function positiveInt_(x,allowZero){
+  if(x===''||x===null||x===undefined)throw Error('Kuantitas wajib diisi.');
+  const n=Number(x);if(!Number.isInteger(n)||n<(allowZero?0:1)||n>100000000)throw Error('Kuantitas harus bilangan bulat '+(allowZero?'>= 0':'> 0')+'.');return n;
+}
+function optionalMoney_(x){if(x===''||x===null||x===undefined)return '';const n=Number(x);if(!Number.isFinite(n)||n<0)throw Error('Nilai biaya/harga tidak valid.');return n;}
+function date_(x){const s=clean_(x);if(!s)return '';if(!/^\d{4}-\d{2}-\d{2}$/.test(s)||new Date(s+'T12:00:00Z').toISOString().slice(0,10)!==s)throw Error('Tanggal harus YYYY-MM-DD.');return s;}
+function safeUrl_(x){const s=clean_(x);if(s&&!/^https:\/\//i.test(s))throw Error('Foto harus berupa tautan https:// yang aman.');return s;}
+function now_(){return Utilities.formatDate(new Date(),'Asia/Makassar',"yyyy-MM-dd'T'HH:mm:ss");}
+function today_(){return Utilities.formatDate(new Date(),'Asia/Makassar','yyyy-MM-dd');}
+function newId_(prefix){return prefix+'-'+Utilities.formatDate(new Date(),'Asia/Makassar','yyMMddHHmmss')+'-'+Utilities.getUuid().slice(0,8).toUpperCase();}
+function hash_(salt,password){return Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256,salt+'|'+password).map(b=>('0'+(b&255).toString(16)).slice(-2)).join('');}
+function asValue_(x){return x instanceof Date?Utilities.formatDate(x,'Asia/Makassar',"yyyy-MM-dd'T'HH:mm:ss"):x===null||x===undefined?'':x;}
+function cellSafe_(x){
+  if(x===undefined||x===null)return '';
+  const s=String(x);
+  // Prevent formula injection from user-submitted text written to Google Sheets.
+  if(typeof x==='string'&&/^[\s]*[=+@]/.test(s))return "'"+s;
+  return x;
+}
+function audit_(actor,action,entity,id,branch,details){
+  appendOne_('AUDIT',{at:now_(),actor:actor.username,role:actor.role,action,entity,entityId:id,branch,details:String(details||'').slice(0,1200)});
+}

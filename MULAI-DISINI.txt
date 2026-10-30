@@ -1,0 +1,27 @@
+TIGALAPAN | ASSET CONTROL CENTER - PANDUAN SINGKAT
+==================================================
+
+SISTEM SUDAH DIBUAT SEBAGAI KODE SUMBER, BELUM TERPASANG DI SUPABASE / GITHUB ANDA.
+
+1. Buka https://supabase.com/dashboard
+2. Pilih project toffshikvcruqejszmbs
+3. SQL Editor: jalankan supabase/01_schema.sql sampai sukses.
+4. SQL Editor: jalankan supabase/02_workflows.sql sampai sukses.
+5. Authentication > Users: buat akun email administrator.
+6. Edit email pada supabase/03_bootstrap_admin.sql lalu jalankan di SQL Editor.
+7. Project Settings > API Keys: salin PUBLISHABLE / ANON KEY (bukan service_role).
+8. Edit config.js, tempel key publik pada supabaseAnonKey.
+9. Extract ZIP, buat repo GitHub, upload seluruh FILE dan FOLDER ke ROOT repo.
+10. GitHub > Settings > Pages > Deploy from a branch > main > /(root) > Save.
+11. Buka URL GitHub Pages, login sebagai admin, buat lokasi/cabang.
+12. Buat staf pada Authentication > Users, aktifkan dan atur role/cabang melalui aplikasi.
+13. Jalankan pengujian pada TESTING.md sebelum menggunakan data riil.
+
+PANDUAN DETAIL : README.md
+PREVIEW (DATA CONTOH) : folder preview/
+SOURCE LAMA : folder data/
+
+KONFIGURASI RAHASIA:
+- Jangan pernah tempel service_role, sb_secret_, password, atau access token ke repository.
+- Anon/publishable key memang publik; data dilindungi dengan Row Level Security.
+- SQL belum dijalankan pada proyek Anda; selalu backup sebelum membuat tabel produksi.
