@@ -116,3 +116,19 @@ html,body,#app{max-width:100%;overflow-x:clip}
 
 .trend-legend{font-size:10px;color:var(--muted);display:flex;gap:14px;margin:-9px 0 16px}.trend-legend span:first-child{color:#f9732b}.trend-legend span:last-child{color:#3c77d5}
 .trend-grid{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:7px}.trend-month{text-align:center;min-width:0;display:flex;flex-direction:column;gap:4px;font-size:10px;color:#6b7789}.trend-month b{font-size:11px;color:#253146}.trend-month small{font-size:9px}.trend-bars{display:flex;justify-content:center;align-items:end;gap:3px;height:115px;border-bottom:1px solid #e8eaf0}.trend-bar{width:min(19px,40%);border:0;min-height:4px;cursor:pointer;border-radius:4px 4px 0 0;transition:height .2s}.trend-bar.ba{background:#f9732b}.trend-bar.mt{background:#3c77d5}
+
+/* v1.6 FAT register: ringkas dan responsif */
+.asset-table th:nth-child(n){width:auto!important}
+.asset-table .table{table-layout:fixed}
+.asset-table th:nth-child(1){width:23%!important}.asset-table th:nth-child(2){width:15%!important}.asset-table th:nth-child(3){width:13%!important}.asset-table th:nth-child(4){width:5%!important}.asset-table th:nth-child(5){width:15%!important}.asset-table th:nth-child(6){width:11%!important}.asset-table th:nth-child(7){width:8%!important}.asset-table th:nth-child(8){width:10%!important}
+.asset-table td{overflow-wrap:anywhere;word-break:normal;font-size:11px;padding:9px 8px!important}
+.asset-table td strong{font-size:11px}.asset-table td small{max-width:100%}.photo-asset-link{color:#d66e24;font-weight:700;font-size:11px;text-decoration:none;white-space:normal}
+.fat-kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}.fat-kpis>div{background:#f8fafc;padding:12px;border:1px solid #edf1f5;border-radius:10px;min-width:0}.fat-kpis small{color:#697789;display:block;font-size:10px}.fat-kpis b{display:block;margin-top:7px;font-size:17px;overflow-wrap:anywhere}
+@media(max-width:1100px){.asset-table th:nth-child(n){width:auto!important}.fat-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:700px){.asset-table .table{table-layout:auto}.fat-kpis{grid-template-columns:1fr 1fr}.fat-kpis b{font-size:14px}}
+
+/* v1.6.2 -- panel status sinkronisasi dan tombol muat ulang. */
+.ac-data-check{display:flex;flex-direction:column;gap:4px;margin-bottom:14px;padding:12px 15px;border:1px solid #cfe9df;border-left:3px solid #15946e;border-radius:10px;background:#f0faf5;color:#234a3e;font-size:12px;line-height:1.45;overflow-wrap:anywhere}
+.ac-data-check strong{font-size:12px}.ac-data-check span{font-size:11px}.ac-data-check.attention{background:#fff7ec;border-color:#ffe2b9;border-left-color:#f9732b;color:#80551e}.ac-data-check small{font-size:11px}
+.ac-sync-btn{white-space:nowrap;flex:none}
+@media(max-width:740px){.ac-sync-btn{padding:6px!important;min-width:34px;font-size:0!important;gap:0}.ac-sync-btn svg{width:18px;height:18px}}
