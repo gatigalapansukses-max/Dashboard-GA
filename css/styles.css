@@ -132,3 +132,65 @@ html,body,#app{max-width:100%;overflow-x:clip}
 .ac-data-check strong{font-size:12px}.ac-data-check span{font-size:11px}.ac-data-check.attention{background:#fff7ec;border-color:#ffe2b9;border-left-color:#f9732b;color:#80551e}.ac-data-check small{font-size:11px}
 .ac-sync-btn{white-space:nowrap;flex:none}
 @media(max-width:740px){.ac-sync-btn{padding:6px!important;min-width:34px;font-size:0!important;gap:0}.ac-sync-btn svg{width:18px;height:18px}}
+
+
+/* v1.6.3 — pencarian aset: dropdown terbatas dalam modal, tak pernah selebar nama aset */
+.modal,.modal-body,.modal-head,.modal-foot,.form-grid,.form-grid>*{min-width:0;max-width:100%;box-sizing:border-box}
+.modal{overflow-x:hidden}
+.form-grid{gap:12px 14px}
+.form-grid .wide{min-width:0;grid-column:1/-1}
+.form-grid label,.asset-picker label{min-width:0;max-width:100%;overflow-wrap:anywhere}
+.field,input.field,select.field,textarea.field{max-width:100%;min-width:0;width:100%;box-sizing:border-box}
+select.field{text-overflow:ellipsis;white-space:nowrap}
+.modal-body .field{font-size:12px;line-height:1.45}
+.asset-picker{position:relative;min-width:0;max-width:100%;grid-column:1/-1}
+.asset-picker>label{display:block;font-size:12px;font-weight:750;margin-bottom:7px;color:#293449}
+.asset-picker-control{position:relative;display:flex;min-width:0;align-items:center;width:100%}
+.asset-picker-control .asset-picker-search{width:100%;min-width:0;max-width:100%;font-size:12px;padding:11px 39px 11px 37px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;border-radius:10px}
+.asset-picker-icon{position:absolute;left:13px;color:#8e9aae;pointer-events:none;display:flex}
+.asset-picker-clear{position:absolute;right:8px;top:50%;transform:translateY(-50%);border:0;border-radius:7px;background:#f3f5f9;color:#566275;font-size:21px;height:30px;width:30px;cursor:pointer;display:grid;place-items:center;line-height:1}
+.asset-picker-clear[hidden]{display:none}
+.asset-picker-chosen .asset-picker-search{border-color:#30a27b;background:#f4fff9}
+.asset-picker-message{font-size:11px;line-height:1.55;color:#7a8596;margin-top:6px;overflow-wrap:anywhere}
+.asset-picker-results{position:absolute;z-index:100;left:0;right:0;top:calc(100% - 23px);max-width:100%;max-height:min(245px,40vh);overflow-y:auto;overscroll-behavior:contain;border:1px solid #cfd8e4;border-radius:10px;background:white;box-shadow:0 16px 35px #1c2b4140;padding:4px;box-sizing:border-box}
+.asset-picker-results[hidden]{display:none!important}
+.asset-picker-hint{font-size:12px;color:#7b8797;line-height:1.5;padding:12px}
+.asset-picker-option{display:block;text-align:left;background:white;border:0;border-bottom:1px solid #f1f3f6;padding:10px 12px;width:100%;min-width:0;max-width:100%;cursor:pointer;color:#273345;border-radius:5px}
+.asset-picker-option:last-child{border-bottom:0}
+.asset-picker-option:hover,.asset-picker-option.active,.asset-picker-option:focus-visible{background:#fff2e9;outline:1px solid #ffbb8b}
+.asset-picker-row{display:flex;align-items:center;justify-content:space-between;gap:8px;min-width:0}
+.asset-picker-row strong{font-size:12px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.asset-picker-row em{font-size:10px;color:#cd6a28;font-style:normal;white-space:nowrap;font-weight:750;max-width:34%;overflow:hidden;text-overflow:ellipsis;flex:none}
+.asset-picker-sub{display:block;font-size:10px;color:#7d8898;margin-top:4px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;max-width:100%}
+/* Semua tabel menggunakan ruang layar; teks panjang tidak menekan tombol/kolom lain. */
+.content,.workspace,.panel,.tablewrap{min-width:0;max-width:100%}
+.tablewrap{overflow-x:hidden!important}
+.table{width:100%;max-width:100%;table-layout:fixed}
+.table th,.table td{min-width:0;overflow-wrap:anywhere;line-height:1.35;padding:9px 7px}
+.table .controls,.row-actions{gap:4px;align-items:center}
+.table .ghost-button{max-width:100%;padding:5px 7px}
+@media(max-width:1100px){
+ .tablewrap .table{table-layout:auto}
+ .table tbody tr{min-width:0}
+ .table td{gap:8px;min-width:0}
+}
+@media(max-width:740px){
+ .modal{width:calc(100vw - 16px);max-width:calc(100vw - 16px)}
+ .modal-body{padding:16px}
+ .asset-picker-results{max-height:min(220px,34vh)}
+ .asset-picker-row strong{font-size:11px}
+ .asset-picker-row em{font-size:9px;max-width:42%}
+ .asset-picker-sub{font-size:10px}
+ .table td{line-height:1.5}
+}
+
+
+/* v1.6.3 - filter cepat untuk daftar pada seluruh menu operasional */
+.list-search{display:flex;align-items:center;gap:8px;min-width:0;max-width:100%;background:#fff;border:1px solid #e6ebf1;border-radius:10px;padding:9px 12px;margin:10px 0}
+.list-search>span{display:flex;color:#8a96a8;flex:none}
+.list-search .field{flex:1;min-width:0;border:0;background:transparent;box-shadow:none;padding:5px 3px;font-size:12px}
+.list-search .field:focus{outline:0}
+.list-search-status{font-size:10px;white-space:nowrap;color:#8b95a5;flex:none}
+.table tbody tr[hidden]{display:none!important}
+.asset-picker-search::-webkit-search-cancel-button{-webkit-appearance:none;appearance:none;display:none}
+@media(max-width:740px){.list-search{padding:7px 10px;gap:5px}.list-search-status{font-size:9px}}
